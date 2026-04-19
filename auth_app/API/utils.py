@@ -109,11 +109,31 @@ def _make_uid_and_token(user):
     return uid, token
 
 
+def get_frontend_base_url():
+    """Return the configured frontend base URL for auth links."""
+    return getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
+
+
+def build_activation_url(user):
+    """Return the frontend activation URL for a user."""
+    uid, token = _make_uid_and_token(user)
+    frontend_base = get_frontend_base_url()
+    return f"{frontend_base}/pages/auth/activate.html?uid={uid}&token={token}"
+
+
+def build_password_reset_url(user):
+    """Return the frontend password-reset URL for a user."""
+    uid, token = _make_uid_and_token(user)
+    frontend_base = get_frontend_base_url()
+    return (
+        f"{frontend_base}/pages/auth/confirm_password.html?uid={uid}&token={token}"
+    )
+
+
 def send_activation_email(user, request):
     """Enqueue an account-activation e-mail job and return (uidb64, token)."""
     uid, token = _make_uid_and_token(user)
-    frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
-    activation_url = f"{frontend_base}/pages/auth/activate.html?uid={uid}&token={token}"
+    activation_url = build_activation_url(user)
     queue = django_rq.get_queue("default")
     queue.enqueue(
         send_activation_email_task,
@@ -146,8 +166,7 @@ def send_activation_email_task(email, username, activation_url):
 def send_password_reset_email(user, request):
     """Enqueue a password-reset e-mail job and return (uidb64, token)."""
     uid, token = _make_uid_and_token(user)
-    frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
-    reset_url = f"{frontend_base}/pages/auth/confirm_password.html?uid={uid}&token={token}"
+    reset_url = build_password_reset_url(user)
     queue = django_rq.get_queue("default")
     queue.enqueue(
         send_password_reset_email_task,

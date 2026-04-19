@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
@@ -13,10 +14,13 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from auth_app.admin import VideoflixUserAdmin
 from auth_app.models import RevokedToken
 from auth_app.api.utils import (
+    build_activation_url,
     send_activation_email,
     send_activation_email_task,
+    build_password_reset_url,
     send_password_reset_email,
     send_password_reset_email_task,
 )
@@ -443,3 +447,40 @@ class EmailUtilsTests(APITestCase):
         sent = mail.outbox[0]
         self.assertEqual(sent.subject, "Reset your Password")
         self.assertIn(self.user.email, sent.to)
+
+    def test_build_activation_url_points_to_frontend(self):
+        """Activation URL builder should match the frontend activation page format."""
+        activation_url = build_activation_url(self.user)
+        self.assertIn(DUMMY_FRONTEND, activation_url)
+        self.assertIn("/pages/auth/activate.html", activation_url)
+        self.assertIn("uid=", activation_url)
+        self.assertIn("token=", activation_url)
+
+    def test_build_password_reset_url_points_to_frontend(self):
+        """Password-reset URL builder should match the frontend reset page format."""
+        reset_url = build_password_reset_url(self.user)
+        self.assertIn(DUMMY_FRONTEND, reset_url)
+        self.assertIn("/pages/auth/confirm_password.html", reset_url)
+        self.assertIn("uid=", reset_url)
+        self.assertIn("token=", reset_url)
+
+
+@override_settings(FRONTEND_BASE_URL=DUMMY_FRONTEND)
+class UserAdminActivationLinkTests(APITestCase):
+    """Verify that Django admin exposes activation links for inactive users."""
+
+    def setUp(self):
+        self.site = AdminSite()
+        self.admin = VideoflixUserAdmin(User, self.site)
+
+    def test_inactive_user_gets_clickable_activation_link(self):
+        """Inactive users should expose a frontend activation link in admin."""
+        user = _make_inactive_user(email="adminlink@test.de")
+        html = self.admin.admin_activation_link(user)
+        self.assertIn(DUMMY_FRONTEND, html)
+        self.assertIn("/pages/auth/activate.html", html)
+
+    def test_active_user_shows_already_active_message(self):
+        """Active users should not display an activation link in admin."""
+        user = _make_active_user(email="adminalreadyactive@test.de")
+        self.assertEqual(self.admin.admin_activation_link(user), "Account already active")
