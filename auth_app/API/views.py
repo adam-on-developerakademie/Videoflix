@@ -11,7 +11,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+)
 from rest_framework.views import APIView
 
 from auth_app.models import RevokedToken
@@ -34,6 +37,7 @@ class RegistrationView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        """Validate payload, create inactive user, and enqueue activation email."""
         if request.user.is_authenticated:
             return Response(
                 {"error": "Authenticated users cannot create a new account."},
@@ -62,6 +66,7 @@ class ActivationView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, uidb64, token):
+        """Validate activation token and mark the account as active."""
         try:
             uid = force_str(urlsafe_base64_decode(uidb64))
             user = AuthUser.objects.get(pk=uid)
@@ -92,6 +97,7 @@ class PasswordResetView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        """Accept email and enqueue password-reset message if account exists."""
         email = request.data.get("email", "").strip()
         if not email:
             return Response(
@@ -117,6 +123,7 @@ class PasswordConfirmView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, uidb64, token):
+        """Verify reset token and persist the new password."""
         new_password = request.data.get("new_password", "")
         confirm_password = request.data.get("confirm_password", "")
 
