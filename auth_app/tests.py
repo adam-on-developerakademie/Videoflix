@@ -14,7 +14,12 @@ from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from auth_app.models import RevokedToken
-from auth_app.api.utils import send_activation_email, send_password_reset_email
+from auth_app.api.utils import (
+    send_activation_email,
+    send_activation_email_task,
+    send_password_reset_email,
+    send_password_reset_email_task,
+)
 
 User = get_user_model()
 
@@ -386,42 +391,55 @@ class EmailUtilsTests(APITestCase):
         """Return the HTML alternative body of the sent email at index."""
         return mail.outbox[index].alternatives[0][0]
 
-    def test_activation_email_links_to_frontend(self):
+    @patch("auth_app.api.utils.django_rq.get_queue")
+    def test_activation_email_links_to_frontend(self, mock_get_queue):
         send_activation_email(self.user, self.request)
-        self.assertEqual(len(mail.outbox), 1)
-        html = self._html_body()
+        queue = mock_get_queue.return_value
+        queue.enqueue.assert_called_once()
+        args = queue.enqueue.call_args[0]
+        self.assertEqual(args[0].__name__, "send_activation_email_task")
+        self.assertEqual(args[1], self.user.email)
+        self.assertEqual(args[2], self.user.username)
+        html = args[3]
         self.assertIn(DUMMY_FRONTEND, html)
         self.assertIn("/pages/auth/activate.html", html)
         self.assertIn("uid=", html)
         self.assertIn("token=", html)
 
-    def test_activation_email_does_not_link_to_backend(self):
+    @patch("auth_app.api.utils.django_rq.get_queue")
+    def test_activation_email_does_not_link_to_backend(self, mock_get_queue):
         send_activation_email(self.user, self.request)
-        html = self._html_body()
+        html = mock_get_queue.return_value.enqueue.call_args[0][3]
         self.assertNotIn("/api/activate/", html)
 
     def test_activation_email_subject_and_recipient(self):
-        send_activation_email(self.user, self.request)
+        send_activation_email_task(self.user.email, self.user.username, f"{DUMMY_FRONTEND}/pages/auth/activate.html?uid=x&token=y")
         sent = mail.outbox[0]
         self.assertEqual(sent.subject, "Confirm your email")
         self.assertIn(self.user.email, sent.to)
 
-    def test_password_reset_email_links_to_frontend(self):
+    @patch("auth_app.api.utils.django_rq.get_queue")
+    def test_password_reset_email_links_to_frontend(self, mock_get_queue):
         send_password_reset_email(self.user, self.request)
-        self.assertEqual(len(mail.outbox), 1)
-        html = self._html_body()
+        queue = mock_get_queue.return_value
+        queue.enqueue.assert_called_once()
+        args = queue.enqueue.call_args[0]
+        self.assertEqual(args[0].__name__, "send_password_reset_email_task")
+        self.assertEqual(args[1], self.user.email)
+        html = args[2]
         self.assertIn(DUMMY_FRONTEND, html)
         self.assertIn("/pages/auth/confirm_password.html", html)
         self.assertIn("uid=", html)
         self.assertIn("token=", html)
 
-    def test_password_reset_email_does_not_link_to_backend(self):
+    @patch("auth_app.api.utils.django_rq.get_queue")
+    def test_password_reset_email_does_not_link_to_backend(self, mock_get_queue):
         send_password_reset_email(self.user, self.request)
-        html = self._html_body()
+        html = mock_get_queue.return_value.enqueue.call_args[0][2]
         self.assertNotIn("/api/password_confirm/", html)
 
     def test_password_reset_email_subject_and_recipient(self):
-        send_password_reset_email(self.user, self.request)
+        send_password_reset_email_task(self.user.email, f"{DUMMY_FRONTEND}/pages/auth/confirm_password.html?uid=x&token=y")
         sent = mail.outbox[0]
         self.assertEqual(sent.subject, "Reset your Password")
         self.assertIn(self.user.email, sent.to)

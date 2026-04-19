@@ -1,4 +1,4 @@
-﻿asgiref==3.11.1
+asgiref==3.11.1
 click==8.3.2
 colorama==0.4.6
 croniter==6.2.2

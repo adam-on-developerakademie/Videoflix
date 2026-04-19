@@ -3,11 +3,11 @@
 import logging
 from datetime import datetime, timezone
 
+import django_rq
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
-from django.urls import reverse
 from django.utils.encoding import force_bytes
 from django.utils.html import strip_tags
 from django.utils.http import urlsafe_base64_encode
@@ -110,31 +110,56 @@ def _make_uid_and_token(user):
 
 
 def send_activation_email(user, request):
-    """Send an account-activation e-mail and return (uidb64, token)."""
+    """Enqueue an account-activation e-mail job and return (uidb64, token)."""
     uid, token = _make_uid_and_token(user)
     frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
     activation_url = f"{frontend_base}/pages/auth/activate.html?uid={uid}&token={token}"
+    queue = django_rq.get_queue("default")
+    queue.enqueue(
+        send_activation_email_task,
+        user.email,
+        user.username,
+        activation_url,
+    )
+    logger.info("Activation email job enqueued for %s", user.email)
+    return uid, token
+
+
+def send_activation_email_task(email, username, activation_url):
+    """RQ task: render and send the activation e-mail."""
     html_message = render_to_string(
         "auth_app/emails/activation.html",
-        {"user": user, "activation_url": activation_url},
+        {"user": {"username": username}, "activation_url": activation_url},
     )
     send_mail(
         subject="Confirm your email",
         message=strip_tags(html_message),
         from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[user.email],
+        recipient_list=[email],
         html_message=html_message,
         fail_silently=False,
     )
-    logger.info("Activation email sent to %s", user.email)
-    return uid, token
+    logger.info("Activation link for %s: %s", email, activation_url)
+    logger.info("Activation email sent to %s", email)
 
 
 def send_password_reset_email(user, request):
-    """Send a password-reset e-mail and return (uidb64, token)."""
+    """Enqueue a password-reset e-mail job and return (uidb64, token)."""
     uid, token = _make_uid_and_token(user)
     frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
     reset_url = f"{frontend_base}/pages/auth/confirm_password.html?uid={uid}&token={token}"
+    queue = django_rq.get_queue("default")
+    queue.enqueue(
+        send_password_reset_email_task,
+        user.email,
+        reset_url,
+    )
+    logger.info("Password reset email job enqueued for %s", user.email)
+    return uid, token
+
+
+def send_password_reset_email_task(email, reset_url):
+    """RQ task: render and send the password-reset e-mail."""
     html_message = render_to_string(
         "auth_app/emails/password_reset.html",
         {"reset_url": reset_url},
@@ -143,8 +168,9 @@ def send_password_reset_email(user, request):
         subject="Reset your Password",
         message=strip_tags(html_message),
         from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[user.email],
+        recipient_list=[email],
         html_message=html_message,
         fail_silently=False,
     )
-    logger.info("Password reset email sent to %s", user.email)
+    logger.info("Password reset link for %s: %s", email, reset_url)
+    logger.info("Password reset email sent to %s", email)
