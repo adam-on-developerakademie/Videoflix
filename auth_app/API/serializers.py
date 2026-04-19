@@ -10,20 +10,16 @@ AuthUser = get_user_model()
 
 
 class RegistrationSerializer(serializers.ModelSerializer):
-    """Validate and create a new user account."""
+    """Validate and create a new inactive user account."""
 
     confirmed_password = serializers.CharField(write_only=True)
 
     class Meta:
         model = User
-        fields = ["username", "email", "password", "confirmed_password"]
+        fields = ["email", "password", "confirmed_password"]
         extra_kwargs = {
-            "password": {
-                "write_only": True,
-            },
-            "email": {
-                "required": True,
-            },
+            "password": {"write_only": True},
+            "email": {"required": True},
         }
 
     def validate_confirmed_password(self, value):
@@ -40,12 +36,23 @@ class RegistrationSerializer(serializers.ModelSerializer):
         return value
 
     def save(self):
-        """Create the account with a hashed password and return it."""
+        """Create an inactive account and return it.
+
+        The username is derived from the local part of the e-mail address.
+        A numeric suffix is appended when a collision exists.
+        The account is set inactive; activation via e-mail is required.
+        """
+        email = self.validated_data["email"]
         password = self.validated_data["password"]
-        account = User(
-            email=self.validated_data["email"],
-            username=self.validated_data["username"],
-        )
+
+        base_username = email.split("@")[0]
+        username = base_username
+        counter = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{base_username}_{counter}"
+            counter += 1
+
+        account = User(email=email, username=username, is_active=False)
         account.set_password(password)
         account.save()
         return account

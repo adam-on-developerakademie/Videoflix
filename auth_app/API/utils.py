@@ -1,9 +1,16 @@
-"""Utility helpers for JWT cookie handling and token revocation."""
+"""Utility helpers for JWT cookie handling, token revocation, and email dispatch."""
 
 import logging
 from datetime import datetime, timezone
 
 from django.conf import settings
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.urls import reverse
+from django.utils.encoding import force_bytes
+from django.utils.html import strip_tags
+from django.utils.http import urlsafe_base64_encode
 from rest_framework_simplejwt.exceptions import TokenError
 from auth_app.models import RevokedToken
 
@@ -93,3 +100,51 @@ def clear_auth_cookies(response):
     )
 
     return response
+
+
+def _make_uid_and_token(user):
+    """Return a (uidb64, token) tuple for the given user."""
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    return uid, token
+
+
+def send_activation_email(user, request):
+    """Send an account-activation e-mail and return (uidb64, token)."""
+    uid, token = _make_uid_and_token(user)
+    frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
+    activation_url = f"{frontend_base}/pages/auth/activate.html?uid={uid}&token={token}"
+    html_message = render_to_string(
+        "auth_app/emails/activation.html",
+        {"user": user, "activation_url": activation_url},
+    )
+    send_mail(
+        subject="Confirm your email",
+        message=strip_tags(html_message),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        html_message=html_message,
+        fail_silently=False,
+    )
+    logger.info("Activation email sent to %s", user.email)
+    return uid, token
+
+
+def send_password_reset_email(user, request):
+    """Send a password-reset e-mail and return (uidb64, token)."""
+    uid, token = _make_uid_and_token(user)
+    frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://127.0.0.1:5500")
+    reset_url = f"{frontend_base}/pages/auth/confirm_password.html?uid={uid}&token={token}"
+    html_message = render_to_string(
+        "auth_app/emails/password_reset.html",
+        {"reset_url": reset_url},
+    )
+    send_mail(
+        subject="Reset your Password",
+        message=strip_tags(html_message),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        html_message=html_message,
+        fail_silently=False,
+    )
+    logger.info("Password reset email sent to %s", user.email)

@@ -2,44 +2,38 @@
 
 import logging
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 from rest_framework import status
-from rest_framework.permissions import (
-    AllowAny,
-)
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import (
-    AccessToken,
-    RefreshToken,
-)
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.views import APIView
 
 from auth_app.models import RevokedToken
-from .serializers import (
-    CustomTokenObtainPairSerializer,
-    RegistrationSerializer,
-)
+from .serializers import CustomTokenObtainPairSerializer, RegistrationSerializer
 from .utils import (
     clear_auth_cookies,
     revoke_token,
+    send_activation_email,
+    send_password_reset_email,
     set_auth_cookies,
 )
 
-
+AuthUser = get_user_model()
 logger = logging.getLogger(__name__)
 
 
 class RegistrationView(APIView):
-    """Create new user accounts for anonymous clients."""
+    """Create new inactive user accounts and dispatch an activation e-mail."""
 
     permission_classes = [AllowAny]
 
     def post(self, request):
-        """Register a new user unless the caller is already authenticated."""
         if request.user.is_authenticated:
             return Response(
                 {"error": "Authenticated users cannot create a new account."},
@@ -47,14 +41,118 @@ class RegistrationView(APIView):
             )
 
         serializer = RegistrationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        if serializer.is_valid():
-            serializer.save()
+        user = serializer.save()
+        uid, token = send_activation_email(user, request)
+
+        return Response(
+            {
+                "user": {"id": user.pk, "email": user.email},
+                "token": token,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ActivationView(APIView):
+    """Activate a user account via the uidb64/token link from the e-mail."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, uidb64, token):
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = AuthUser.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, AuthUser.DoesNotExist):
             return Response(
-                {"detail": "User created successfully!"},
-                status=status.HTTP_201_CREATED,
+                {"error": "Activation failed. Invalid link."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        if not default_token_generator.check_token(user, token):
+            return Response(
+                {"error": "Activation failed. Link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.is_active = True
+        user.save(update_fields=["is_active"])
+        logger.info("User %s activated their account.", user.email)
+        return Response(
+            {"message": "Account successfully activated."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordResetView(APIView):
+    """Send a password-reset e-mail when the provided address is known."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email", "").strip()
+        if not email:
+            return Response(
+                {"error": "Email is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = AuthUser.objects.get(email=email)
+            send_password_reset_email(user, request)
+        except AuthUser.DoesNotExist:
+            pass  # Reveal nothing about whether the address is registered.
+
+        return Response(
+            {"detail": "An email has been sent to reset your password."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordConfirmView(APIView):
+    """Apply the new password after validating the reset token."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request, uidb64, token):
+        new_password = request.data.get("new_password", "")
+        confirm_password = request.data.get("confirm_password", "")
+
+        if not new_password or not confirm_password:
+            return Response(
+                {"error": "Both new_password and confirm_password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if new_password != confirm_password:
+            return Response(
+                {"error": "Passwords do not match."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = AuthUser.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, AuthUser.DoesNotExist):
+            return Response(
+                {"error": "Invalid reset link."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not default_token_generator.check_token(user, token):
+            return Response(
+                {"error": "Reset link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+        logger.info("User %s reset their password.", user.email)
+        return Response(
+            {"detail": "Your Password has been successfully reset."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class CookieTokenObtainPairView(TokenObtainPairView):
