@@ -199,5 +199,16 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
 
+
 # Frontend base URL (used for email links)
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:5500")
+
+ # REST Framework: JWT-Authentifizierung als Standard
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+    ),
+}
