@@ -7,14 +7,14 @@ from django.conf import settings
 
 
 def transcode_video(video_id: int) -> None:
-    """
-    RQ task:
-    1. Rename the uploaded source file to <id>.<original_ext>.
-    2. Transcode to 1080p, 720p, 480p MP4 under videos/<id>/<resolution>/<id>.mp4.
-    3. Generate HLS playlists (per-resolution + master) under videos/<id>/.
-    4. Generate thumbnail at videos/<id>/thumbnail/<id>.jpg.
-    5. Delete the renamed source file afterwards.
-    6. Update all resolution FileFields, thumbnail_url and conversion_status.
+    """Convert one uploaded source video into all output artifacts.
+
+    Workflow:
+    1. Rename source to <id>.<original_ext> when needed.
+    2. Transcode to 1080p, 720p, and 480p MP4 outputs.
+    3. Generate HLS variant playlists and one master playlist.
+    4. Generate a thumbnail from the 1080p output.
+    5. Remove temporary source files and update model fields.
     """
     from content_app.models import Video  # local import to avoid App Registry issues
 
@@ -36,12 +36,20 @@ def transcode_video(video_id: int) -> None:
                 return configured
 
         # 2) Fallback to normalized source file at media/videos/<id>.*.
-        normalized_candidates = sorted((Path(settings.MEDIA_ROOT) / "videos").glob(f"{video_id}.*"))
+        normalized_candidates = sorted(
+            (Path(settings.MEDIA_ROOT) / "videos").glob(f"{video_id}.*")
+        )
         if normalized_candidates:
             return normalized_candidates[0]
 
         # 3) Final fallback: use existing 1080p file as source for remaining renditions.
-        fallback_1080 = Path(settings.MEDIA_ROOT) / "videos" / str(video_id) / "1080p" / f"{video_id}.mp4"
+        fallback_1080 = (
+            Path(settings.MEDIA_ROOT)
+            / "videos"
+            / str(video_id)
+            / "1080p"
+            / f"{video_id}.mp4"
+        )
         if fallback_1080.exists():
             return fallback_1080
 
@@ -66,9 +74,24 @@ def transcode_video(video_id: int) -> None:
 
     # --- Step 2: define resolution targets ---
     resolutions = {
-        "1080p": {"vf": "scale=-2:1080", "crf": "22", "height": 1080, "bandwidth": 5500000},
-        "720p":  {"vf": "scale=-2:720",  "crf": "23", "height": 720, "bandwidth": 3000000},
-        "480p":  {"vf": "scale=-2:480",  "crf": "24", "height": 480, "bandwidth": 1500000},
+        "1080p": {
+            "vf": "scale=-2:1080",
+            "crf": "22",
+            "height": 1080,
+            "bandwidth": 5500000,
+        },
+        "720p": {
+            "vf": "scale=-2:720",
+            "crf": "23",
+            "height": 720,
+            "bandwidth": 3000000,
+        },
+        "480p": {
+            "vf": "scale=-2:480",
+            "crf": "24",
+            "height": 480,
+            "bandwidth": 1500000,
+        },
     }
 
     output_paths: dict[str, str] = {}
@@ -203,8 +226,17 @@ def transcode_video(video_id: int) -> None:
     # --- Step 6: update record ---
     video.video_file.name = output_paths["1080p"]
     video.file_1080p.name = output_paths["1080p"]
-    video.file_720p.name  = output_paths["720p"]
-    video.file_480p.name  = output_paths["480p"]
+    video.file_720p.name = output_paths["720p"]
+    video.file_480p.name = output_paths["480p"]
     video.thumbnail_url = f"{settings.MEDIA_URL}{thumbnail_rel.as_posix()}"
     video.conversion_status = Video.ConversionStatus.DONE
-    video.save(update_fields=["video_file", "file_1080p", "file_720p", "file_480p", "thumbnail_url", "conversion_status"])
+    video.save(
+        update_fields=[
+            "video_file",
+            "file_1080p",
+            "file_720p",
+            "file_480p",
+            "thumbnail_url",
+            "conversion_status",
+        ]
+    )

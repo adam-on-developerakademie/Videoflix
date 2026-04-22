@@ -12,12 +12,15 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from auth_app.admin import VideoflixUserAdmin
+from auth_app.api.authentication import CookieJWTAuthentication
 from auth_app.models import RevokedToken
 from auth_app.api.utils import (
     build_activation_url,
+    exp_to_datetime,
+    revoke_token,
     send_activation_email,
     send_activation_email_task,
     build_password_reset_url,
@@ -484,3 +487,188 @@ class UserAdminActivationLinkTests(APITestCase):
         """Active users should not display an activation link in admin."""
         user = _make_active_user(email="adminalreadyactive@test.de")
         self.assertEqual(self.admin.admin_activation_link(user), "Account already active")
+
+
+# ---------------------------------------------------------------------------
+# Admin – activation_link_status and get_fieldsets
+# ---------------------------------------------------------------------------
+
+@override_settings(FRONTEND_BASE_URL=DUMMY_FRONTEND)
+class UserAdminExtraTests(APITestCase):
+    """Cover activation_link_status column and get_fieldsets injection."""
+
+    def setUp(self):
+        self.site = AdminSite()
+        self.admin = VideoflixUserAdmin(User, self.site)
+        self.request = RequestFactory().get("/")
+
+    def test_activation_link_status_active_user_returns_text(self):
+        """Active users show 'Already active' in the changelist column."""
+        user = _make_active_user(email="activestatus@test.de")
+        self.assertEqual(self.admin.activation_link_status(user), "Already active")
+
+    def test_activation_link_status_inactive_user_returns_link(self):
+        """Inactive users get a clickable frontend activation link in the column."""
+        user = _make_inactive_user(email="inactivestatus@test.de")
+        html = self.admin.activation_link_status(user)
+        self.assertIn(DUMMY_FRONTEND, html)
+        self.assertIn("Open link", html)
+
+    def test_get_fieldsets_with_obj_appends_videoflix_section(self):
+        """A user instance triggers the Videoflix fieldset injection."""
+        user = _make_active_user(email="fieldset@test.de")
+        fieldsets = self.admin.get_fieldsets(self.request, obj=user)
+        names = [fs[0] for fs in fieldsets]
+        self.assertIn("Videoflix", names)
+
+    def test_get_fieldsets_without_obj_no_videoflix_section(self):
+        """Passing obj=None must not inject the Videoflix fieldset."""
+        fieldsets = self.admin.get_fieldsets(self.request, obj=None)
+        names = [fs[0] for fs in fieldsets]
+        self.assertNotIn("Videoflix", names)
+
+
+# ---------------------------------------------------------------------------
+# CookieJWTAuthentication
+# ---------------------------------------------------------------------------
+
+class CookieJWTAuthenticationTests(APITestCase):
+    """Test CookieJWTAuthentication with and without a valid access cookie."""
+
+    def setUp(self):
+        self.user = _make_active_user(email="cookieauth@test.de")
+        self.auth = CookieJWTAuthentication()
+        self.factory = RequestFactory()
+
+    def test_no_cookie_returns_none(self):
+        """Missing access_token cookie must return None (unauthenticated)."""
+        request = self.factory.get("/")
+        self.assertIsNone(self.auth.authenticate(request))
+
+    def test_valid_cookie_returns_user_and_token(self):
+        """A valid access_token cookie authenticates the user."""
+        access = str(AccessToken.for_user(self.user))
+        request = self.factory.get("/")
+        request.COOKIES = {"access_token": access}
+        user, token = self.auth.authenticate(request)
+        self.assertEqual(user.pk, self.user.pk)
+
+    def test_revoked_cookie_raises_invalid_token(self):
+        """A revoked access_token cookie must raise InvalidToken."""
+        from rest_framework_simplejwt.exceptions import InvalidToken
+        access_obj = AccessToken.for_user(self.user)
+        RevokedToken.objects.create(
+            jti=access_obj["jti"],
+            token_type="access",
+            user=self.user,
+        )
+        request = self.factory.get("/")
+        request.COOKIES = {"access_token": str(access_obj)}
+        with self.assertRaises(InvalidToken):
+            self.auth.authenticate(request)
+
+
+# ---------------------------------------------------------------------------
+# Utils unit tests
+# ---------------------------------------------------------------------------
+
+class UtilsUnitTests(APITestCase):
+    """Low-level unit tests for JWT utility helpers."""
+
+    def test_exp_to_datetime_none_returns_none(self):
+        """exp_to_datetime(None) must return None."""
+        self.assertIsNone(exp_to_datetime(None))
+
+    def test_revoke_token_invalid_string_returns_none(self):
+        """revoke_token with an unparseable token must return None gracefully."""
+        result = revoke_token("not.a.valid.token", RefreshToken, "127.0.0.1")
+        self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# RevokedToken model __str__
+# ---------------------------------------------------------------------------
+
+class RevokedTokenModelTests(APITestCase):
+    """Test RevokedToken model string representation."""
+
+    def test_str_includes_type_and_jti(self):
+        """__str__ must return '<type>:<jti>'."""
+        user = _make_active_user(email="modelstr@test.de")
+        token = RevokedToken.objects.create(
+            jti="test-jti-xyz",
+            token_type="access",
+            user=user,
+        )
+        self.assertEqual(str(token), "access:test-jti-xyz")
+
+
+# ---------------------------------------------------------------------------
+# Username deduplication during registration
+# ---------------------------------------------------------------------------
+
+class UsernameDeduplicationTests(APITestCase):
+    """Verify the serializer increments duplicate usernames."""
+
+    @patch("auth_app.api.views.send_activation_email", return_value=("uid", "tok"))
+    def test_duplicate_username_prefix_gets_incremented(self, mock_send):
+        """Second registration sharing a username prefix must resolve to '<name>_1'."""
+        User.objects.create_user(username="dup", email="dup@a.de", password="Pass1234!")
+        response = self.client.post(
+            REGISTER_URL,
+            {"email": "dup@b.de", "password": "Test1234!", "confirmed_password": "Test1234!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(username="dup_1").exists())
+
+
+# ---------------------------------------------------------------------------
+# TokenRefresh – invalid token value in cookie
+# ---------------------------------------------------------------------------
+
+class TokenRefreshInvalidTokenTests(APITestCase):
+    """Test TokenRefreshView with a malformed token cookie."""
+
+    def test_malformed_refresh_cookie_returns_400(self):
+        """A cookie containing garbage should yield HTTP 400."""
+        self.client.cookies["refresh_token"] = "not.a.valid.token.at.all"
+        response = self.client.post(REFRESH_URL, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_serializer_exception_returns_400(self):
+        """An unexpected exception from serializer.is_valid must return HTTP 400."""
+        user = _make_active_user(email="serializer_exc@test.de")
+        refresh = RefreshToken.for_user(user)
+        self.client.cookies["refresh_token"] = str(refresh)
+        with patch(
+            "auth_app.api.views.TokenRefreshView.get_serializer"
+        ) as mock_get_serializer:
+            mock_serializer = mock_get_serializer.return_value
+            mock_serializer.is_valid.side_effect = Exception("unexpected error")
+            response = self.client.post(REFRESH_URL, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# Logout – blacklist exception is swallowed
+# ---------------------------------------------------------------------------
+
+class LogoutBlacklistExceptionTests(APITestCase):
+    """Logout must succeed even when the simplejwt blacklist step raises."""
+
+    def setUp(self):
+        self.user = _make_active_user(email="blacklistfail@test.de")
+
+    def test_logout_proceeds_when_blacklist_raises(self):
+        """An exception from blacklist() must be silently swallowed."""
+        self.client.post(
+            LOGIN_URL,
+            {"email": "blacklistfail@test.de", "password": "Test1234!"},
+            format="json",
+        )
+        with patch("auth_app.api.views.RefreshToken") as mock_rt:
+            mock_rt.return_value.get.return_value = None
+            mock_rt.return_value.blacklist.side_effect = Exception("already blacklisted")
+            response = self.client.post(LOGOUT_URL, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)

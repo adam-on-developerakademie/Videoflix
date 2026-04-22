@@ -12,6 +12,7 @@ class CookieJWTAuthentication(JWTAuthentication):
     def authenticate(self, request):
         """
         Return the user and validated token when a JWT is present in the HttpOnly cookie.
+
         Only the 'access_token' cookie is accepted; Authorization header is ignored.
         """
         raw_token = request.COOKIES.get("access_token")
