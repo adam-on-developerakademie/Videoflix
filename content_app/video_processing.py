@@ -11,9 +11,10 @@ def transcode_video(video_id: int) -> None:
     RQ task:
     1. Rename the uploaded source file to <id>.<original_ext>.
     2. Transcode to 1080p, 720p, 480p MP4 under videos/<id>/<resolution>/<id>.mp4.
-    3. Generate thumbnail at videos/<id>/thumbnail/<id>.jpg.
-    4. Delete the renamed source file afterwards.
-    5. Update all resolution FileFields, thumbnail_url and conversion_status.
+    3. Generate HLS playlists (per-resolution + master) under videos/<id>/.
+    4. Generate thumbnail at videos/<id>/thumbnail/<id>.jpg.
+    5. Delete the renamed source file afterwards.
+    6. Update all resolution FileFields, thumbnail_url and conversion_status.
     """
     from content_app.models import Video  # local import to avoid App Registry issues
 
@@ -65,13 +66,14 @@ def transcode_video(video_id: int) -> None:
 
     # --- Step 2: define resolution targets ---
     resolutions = {
-        "1080p": {"vf": "scale=-2:1080", "crf": "22"},
-        "720p":  {"vf": "scale=-2:720",  "crf": "23"},
-        "480p":  {"vf": "scale=-2:480",  "crf": "24"},
+        "1080p": {"vf": "scale=-2:1080", "crf": "22", "height": 1080, "bandwidth": 5500000},
+        "720p":  {"vf": "scale=-2:720",  "crf": "23", "height": 720, "bandwidth": 3000000},
+        "480p":  {"vf": "scale=-2:480",  "crf": "24", "height": 480, "bandwidth": 1500000},
     }
 
     output_paths: dict[str, str] = {}
     created_outputs: list[Path] = []
+    created_hls_files: list[Path] = []
 
     for label, opts in resolutions.items():
         out_rel = Path("videos") / str(video_id) / label / f"{video_id}.mp4"
@@ -107,7 +109,69 @@ def transcode_video(video_id: int) -> None:
         created_outputs.append(out_abs)
         output_paths[label] = out_rel.as_posix()
 
-    # --- Step 3: generate thumbnail from 1080p output ---
+    # --- Step 3: create HLS variant playlists and master playlist ---
+    hls_variant_paths: dict[str, str] = {}
+
+    for label, opts in resolutions.items():
+        variant_dir_rel = Path("videos") / str(video_id) / label
+        variant_dir_abs = Path(settings.MEDIA_ROOT) / variant_dir_rel
+        variant_playlist_abs = variant_dir_abs / "index.m3u8"
+        variant_segment_pattern_abs = variant_dir_abs / "segment_%03d.ts"
+        variant_playlist_rel = variant_dir_rel / "index.m3u8"
+
+        variant_command = [
+            "ffmpeg", "-y",
+            "-i", str(Path(settings.MEDIA_ROOT) / output_paths[label]),
+            "-codec", "copy",
+            "-start_number", "0",
+            "-hls_time", "6",
+            "-hls_playlist_type", "vod",
+            "-hls_segment_filename", str(variant_segment_pattern_abs),
+            str(variant_playlist_abs),
+        ]
+
+        try:
+            subprocess.run(variant_command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError:
+            cleanup_files(created_hls_files)
+            cleanup_files(created_outputs)
+            if source_abs.parent == media_videos_root:
+                cleanup_files([source_abs])
+            video.conversion_status = Video.ConversionStatus.FAILED
+            video.save(update_fields=["conversion_status"])
+            return
+
+        created_hls_files.extend(variant_dir_abs.glob("segment_*.ts"))
+        created_hls_files.append(variant_playlist_abs)
+        hls_variant_paths[label] = variant_playlist_rel.as_posix()
+
+    master_rel = Path("videos") / str(video_id) / "master.m3u8"
+    master_abs = Path(settings.MEDIA_ROOT) / master_rel
+    master_lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
+
+    for label, opts in resolutions.items():
+        height = int(opts["height"])
+        width = int(round(height * 16 / 9 / 2) * 2)
+        bandwidth = int(opts["bandwidth"])
+        master_lines.append(
+            f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{height}"
+        )
+        master_lines.append(hls_variant_paths[label])
+
+    try:
+        master_abs.write_text("\n".join(master_lines) + "\n", encoding="utf-8")
+    except OSError:
+        cleanup_files(created_hls_files)
+        cleanup_files(created_outputs)
+        if source_abs.parent == media_videos_root:
+            cleanup_files([source_abs])
+        video.conversion_status = Video.ConversionStatus.FAILED
+        video.save(update_fields=["conversion_status"])
+        return
+
+    created_hls_files.append(master_abs)
+
+    # --- Step 4: generate thumbnail from 1080p output ---
     thumbnail_rel = Path("videos") / str(video_id) / "thumbnail" / f"{video_id}.jpg"
     thumbnail_abs = Path(settings.MEDIA_ROOT) / thumbnail_rel
     thumbnail_abs.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +188,7 @@ def transcode_video(video_id: int) -> None:
     try:
         subprocess.run(thumbnail_command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError:
+        cleanup_files(created_hls_files)
         cleanup_files(created_outputs)
         if source_abs.parent == media_videos_root:
             cleanup_files([source_abs])
@@ -131,11 +196,11 @@ def transcode_video(video_id: int) -> None:
         video.save(update_fields=["conversion_status"])
         return
 
-    # --- Step 4: remove renamed source ---
+    # --- Step 5: remove renamed source ---
     if source_abs.parent == media_videos_root and source_abs.exists():
         source_abs.unlink()
 
-    # --- Step 5: update record ---
+    # --- Step 6: update record ---
     video.video_file.name = output_paths["1080p"]
     video.file_1080p.name = output_paths["1080p"]
     video.file_720p.name  = output_paths["720p"]
