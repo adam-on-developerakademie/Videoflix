@@ -1,6 +1,10 @@
 """Admin registrations for content domain models."""
 
 import os
+import shutil
+from pathlib import Path
+
+from django.conf import settings
 from django import forms
 from django.contrib import admin
 from django.db import transaction
@@ -70,6 +74,28 @@ class VideoAdmin(admin.ModelAdmin):
 				queue.enqueue(transcode_video, obj.pk)
 
 			transaction.on_commit(enqueue_conversion_job)
+
+	def _cleanup_video_media(self, video_id):
+		video_root = Path(settings.MEDIA_ROOT) / "videos"
+		video_dir = video_root / str(video_id)
+		if video_dir.exists():
+			shutil.rmtree(video_dir, ignore_errors=True)
+
+		# Remove potential normalized source file variants like videos/<id>.<ext>.
+		for source_file in video_root.glob(f"{video_id}.*"):
+			if source_file.is_file():
+				source_file.unlink(missing_ok=True)
+
+	def delete_model(self, request, obj):
+		video_id = obj.pk
+		super().delete_model(request, obj)
+		self._cleanup_video_media(video_id)
+
+	def delete_queryset(self, request, queryset):
+		video_ids = list(queryset.values_list("pk", flat=True))
+		super().delete_queryset(request, queryset)
+		for video_id in video_ids:
+			self._cleanup_video_media(video_id)
 
 	def _file_link(self, field, label, obj):
 		f = getattr(obj, field)
