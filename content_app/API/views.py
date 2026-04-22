@@ -14,6 +14,6 @@ class VideoListView(APIView):
 	permission_classes = [IsAuthenticated]
 
 	def get(self, request):
-		videos = Video.objects.all()
-		serializer = VideoSerializer(videos, many=True)
+		videos = Video.objects.filter(conversion_status=Video.ConversionStatus.DONE)
+		serializer = VideoSerializer(videos, many=True, context={"request": request})
 		return Response(serializer.data)
