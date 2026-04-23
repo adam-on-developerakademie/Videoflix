@@ -108,9 +108,13 @@ JWT_COOKIE_SECURE=False
 
 > **Note:** After cloning the repository, make sure the files `auth_app/api/__init__.py` and `content_app/api/__init__.py` exist. Git does not track empty files by default, which can cause a `ModuleNotFoundError: No module named 'auth_app.api'` on a fresh clone. If they are missing, create them as empty files.
 
-### 2. Start all services
+### 2. Build and start all services
 
 ```bash
+# First start or after Dockerfile/requirements changes
+docker compose up -d --build
+
+# Normal start (if images are already built)
 docker compose up -d
 ```
 
