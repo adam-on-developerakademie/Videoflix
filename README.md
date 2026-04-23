@@ -48,12 +48,25 @@ REST API backend for Videoflix — a video streaming platform. Built with Django
 
 ## Setup
 
+### 0. Requirements
+
+Make sure [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) are installed.
+
+| OS            | Install                                                                 |
+|---------------|-------------------------------------------------------------------------|
+| Windows / Mac | [Docker Desktop](https://www.docker.com/products/docker-desktop/)       |
+| Linux         | `curl -fsSL https://get.docker.com | sudo sh` + Docker Compose plugin  |
+
 ### 1. Clone and configure environment
 
 Copy the example and fill in your values:
 
 ```bash
+# Linux / macOS
 cp .env.example .env
+
+# Windows (PowerShell)
+copy .env.example .env
 ```
 
 Edit `.env`:
@@ -92,6 +105,8 @@ JWT_COOKIE_SECURE=False
 ```
 
 > **Note:** If your `EMAIL_HOST_PASSWORD` contains `$` characters, escape them as `$$` in `.env` when used with Docker Compose.
+
+> **Note:** After cloning the repository, make sure the files `auth_app/api/__init__.py` and `content_app/api/__init__.py` exist. Git does not track empty files by default, which can cause a `ModuleNotFoundError: No module named 'auth_app.api'` on a fresh clone. If they are missing, create them as empty files.
 
 ### 2. Start all services
 
@@ -152,15 +167,22 @@ Transcoding runs as a background job via the RQ worker.
 ## Running Tests
 
 ```bash
-# Locally (requires .venv)
-.venv\Scripts\python.exe -m pytest
+# Inside Docker (works on all platforms)
+docker compose exec web python manage.py test
+```
 
-# With coverage
+```bash
+# Locally with virtual environment
+
+# Linux / macOS
+.venv/bin/python -m pytest
+.venv/bin/python -m coverage run manage.py test
+.venv/bin/python -m coverage report
+
+# Windows (PowerShell)
+.venv\Scripts\python.exe -m pytest
 .venv\Scripts\python.exe -m coverage run manage.py test
 .venv\Scripts\python.exe -m coverage report
-
-# Inside Docker
-docker compose exec web python manage.py test
 ```
 
 Current coverage: **98%** (97 tests)
@@ -170,10 +192,12 @@ Current coverage: **98%** (97 tests)
 ## Code Quality
 
 ```bash
-# PEP 8
-.venv\Scripts\python.exe -m pycodestyle .
+# Linux / macOS
+.venv/bin/python -m pycodestyle .
+.venv/bin/python -m pydocstyle .
 
-# PEP 257 (docstrings)
+# Windows (PowerShell)
+.venv\Scripts\python.exe -m pycodestyle .
 .venv\Scripts\python.exe -m pydocstyle .
 ```
 
