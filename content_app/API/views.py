@@ -23,7 +23,9 @@ class VideoListView(APIView):
 
     def get(self, request):
         """Return serialized video data filtered to completed conversions."""
-        videos = Video.objects.filter(conversion_status=Video.ConversionStatus.DONE)
+        videos = Video.objects.filter(
+            conversion_status=Video.ConversionStatus.DONE,
+        ).order_by("-created_at")
         serializer = VideoSerializer(videos, many=True, context={"request": request})
         return Response(serializer.data)
 
