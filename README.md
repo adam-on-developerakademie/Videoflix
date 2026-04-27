@@ -170,26 +170,73 @@ Transcoding runs as a background job via the RQ worker.
 
 ## Running Tests
 
-```bash
-# Inside Docker (works on all platforms)
-docker compose exec web python manage.py test
-```
+Tests werden mit **pytest** ausgeführt. Coverage wird automatisch mitgemessen und am Ende angezeigt — kein separater Befehl nötig.
+
+### Lokal (ohne Docker)
+
+Voraussetzung: virtuelle Umgebung aktivieren und Dependencies installiert haben (siehe unten).
 
 ```bash
-# Locally with virtual environment
-
 # Linux / macOS
 .venv/bin/python -m pytest
-.venv/bin/python -m coverage run manage.py test
-.venv/bin/python -m coverage report
 
 # Windows (PowerShell)
 .venv\Scripts\python.exe -m pytest
-.venv\Scripts\python.exe -m coverage run manage.py test
-.venv\Scripts\python.exe -m coverage report
 ```
 
-Current coverage: **98%** (97 tests)
+Die Tests laufen lokal gegen **SQLite** — kein laufendes Docker/PostgreSQL/Redis erforderlich.
+
+### Im Docker-Container
+
+Zuerst alle Dienste starten (falls noch nicht laufend):
+
+```bash
+docker compose up -d
+```
+
+Dann Tests ausführen:
+
+```bash
+docker compose exec web python -m pytest
+```
+
+Im Container laufen die Tests gegen **PostgreSQL** (wie in Produktion).
+
+### Virtuelle Umgebung einrichten (einmalig)
+
+```bash
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### Konfiguration
+
+Pytest ist über `setup.cfg` konfiguriert (`[tool:pytest]`):
+- `DJANGO_SETTINGS_MODULE = core.settings`
+- Coverage wird automatisch via `pytest-cov` gemessen (Quelle: `auth_app`, `content_app`, `core`)
+- Fehlende Zeilen werden im Report angezeigt (`--cov-report=term-missing`)
+
+### Aktuelle Abdeckung
+
+```
+Name                             Stmts   Miss  Cover
+----------------------------------------------------
+auth_app\admin.py                   39      2    95%
+content_app\api\serializers.py      13      1    92%
+content_app\api\views.py            48      3    94%
+core\settings.py                    46      2    96%
+----------------------------------------------------
+TOTAL                              690     16    98%
+```
+
+97 Tests — **98% Coverage**
 
 ---
 

@@ -7,3 +7,4 @@ class ContentAppConfig(AppConfig):
     """Application configuration for content features."""
 
     name = 'content_app'
+    verbose_name = "CONTENT MANAGEMENT"
